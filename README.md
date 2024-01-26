@@ -6,5 +6,5 @@ This project analyzed the transcriptomic responses of three plant species: _Arab
 ## Analysis workflow:
 1. Differential expression analysis with [DESeq2](https://bioconductor.org/packages/release/bioc/html/DESeq2.html)
 2. Alternative isoform analysis with [DTUrtle](https://tobitekath.github.io/DTUrtle/)
-3. etc..
+3. Data visualization
 
