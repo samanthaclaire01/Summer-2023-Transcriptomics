@@ -1,0 +1,591 @@
+---
+title: "Camelina Sativa Expression Characterization"
+author: "Samantha Cassity"
+format: html
+editor: visual
+---
+
+## Overview
+
+This document investigates expression in Camelina Sativa
+
+Camelina sequencing dynamics: nuclear paired-end RNA-seq, single-end whole RNA-seq
+
+## Packages
+
+The following code loads in the packages necessary to run the script
+
+```{r}
+library(DESeq2)
+library(tximport)
+library(GenomicFeatures) # takes annotation files and imports them as a database useable in R
+library(readr)
+library(magrittr)
+
+```
+
+## Filtering data and performing DE analysis
+
+The following chunk performs differential gene expression analysis using the DESeq2 package in R. It starts by creating a transcript database (txdb) from a GFF file containing genome annotation information. Next, it reads in the Cs sample metadata file and sets the working directory. It then imports transcript-level quantification data from quant.sf files using the tximport function, which incorporates the gene-to-transcript mapping information (tx2gene) and normalizes the expression data.
+
+A DESeqDataSet object (dds) is created from the imported data and sample metadata and pre-filtering is applied to retain genes with at least 10 reads in at least 4 experiments. Finally, the DESeq function is used to run the DESeq2 pipeline and obtain differential expression results based on the statistical model.
+
+```{r}
+txdb <- makeTxDbFromGFF("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/Csativa_annotation.gtf")
+
+k <- keys(txdb, keytype = "TXNAME")
+
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+library(readr)
+
+cs_samples <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/quants/cs/cssamps.txt", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+
+setwd("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/quants/cs")
+files <- file.path(cs_samples$Sample, "quant.sf") # telling r where to find the quant.sf files
+
+cs_samples$Sample2 <- gsub('_quant', '', cs_samples$Sample2) # can comment this out if you please
+
+
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene, countsFromAbundance = "lengthScaledTPM") 
+
+# transcript import, imports certain quantification files. salmon is a program that takes fastq files and skips the mapping step to just look at known genes to quantify them. countsfromabundance normalizes the expression data based on certain features of the genes (i.e. lengths .. ). tx2gene = tx2gene puts at gene level (AKA no isoforms)
+
+# load in with broad design
+dds <- DESeqDataSetFromTximport(txi, cs_samples, ~ Condition)
+
+# let's impose some slightly agressive pre-filtering:
+# gene must have at least 10 reads in at least 4 experiments
+keep <- rowSums(counts(dds) >= 10) >= 4 
+
+dds <- dds[keep,] # only retaining the keep genes
+
+# run the deseq2 pipeline
+dds <- DESeq(dds) # the stats model
+```
+
+## Sample distance heatmap
+
+This next chunk runs qc (quality control) on the RNAseq data to ensure that the samples are behaving the way we expect. The code makes a sample distance heatmap which tells us how similar the samples are to each other.
+
+```{r}
+vsd <- vst(dds, blind=FALSE) # vst = variance stabilized transformation (flattening the numbers so they're less affected by variance that DEseq cant explain given the model provided to it)
+
+library("RColorBrewer")
+library("pheatmap")
+sampleDists <- dist(t(assay(vsd))) # calculating a distance between all samples based on the gene expression value of every gene
+sampleDistMatrix <- as.matrix(sampleDists) # converts sampleDists to a matrix
+rownames(sampleDistMatrix) <- vsd$Sample2 
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+## Creating DE tables
+
+In the next chunk, results() conducts differential expression analysis. The results are stored in res as a dataframe. filter() filters out results that are not significant (only takes results with p-values that are less than or equal to .05 or log2foldchanges that are greater than or equal to one) and distinct() removes any duplicate rows.
+
+```{r}
+res <- results(dds, contrast = c("Condition", "whole_salt", "whole_control"), tidy = T)
+
+cs_whole_up <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange >= 1) %>%
+  dplyr::distinct(row) 
+
+# 2^1 AKA looking for 2x more different
+# log2FoldChange = how much different are gene expression values in one condition versus the other
+# control is the denominator for contrast 
+# Example: 10 counts in salt/ 100 counts in no salt = 0.1, after log2foldchange would be a negative number
+# cs_whole_up are positive therefore are upregulated under salt stress
+# cs_whole_down are negative therefore are downregulated under salt stress
+
+
+
+cs_whole_down <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange <= -1) %>%
+  dplyr::distinct(row) 
+
+# x = 367 upregulated in salt, y = 527 downregulated in salt for just whole samples
+
+
+res <- results(dds, contrast = c("Condition", "nuc_salt", "nuc_control"), tidy = T)
+
+cs_nuc_up <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange >= 1) %>%
+  dplyr::distinct(row) 
+
+
+cs_nuc_down <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange <= -1) %>%
+  dplyr::distinct(row) 
+
+# x = 3273 upregulated in salt, y = 6735 downregulated in salt for just nuclei samples
+
+
+res <- results(dds, contrast = c("Condition", "nuc_salt", "whole_salt"), tidy = T)
+
+cs_nuc_whole_salt_up <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange >= 1) %>%
+  dplyr::distinct(row) 
+
+
+
+cs_nuc_whole_salt_down <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange <= -1) %>%
+  dplyr::distinct(row) 
+
+# x = 4870 upregulated in salt, y = 11988 downregulated in salt for just salt samples
+
+
+res <- results(dds, contrast = c("Condition", "nuc_control", "whole_control"), tidy = T)
+
+cs_nuc_whole_ctrl_up <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange >= 1) %>%
+  dplyr::distinct(row) 
+
+
+
+cs_nuc_whole_ctrl_down <- res %>%
+  dplyr::filter(padj <= .05 &
+                  log2FoldChange <= -1) %>%
+  dplyr::distinct(row) 
+
+
+# x = 4549 upregulated in salt, y = 7001 downregulated in salt for just control samples
+
+```
+
+## Finding GO terms
+
+The following code retrieves the GO terms for up-regulated genes and creates a dotplot with GO terms on the y-axis and FoldEnrichment on the x-axis. The padjustmethod adjusts for multiple testing. TERM2GENE is the df that maps goterms to geneIDs.
+
+```{r}
+goterms <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/cs_ensembl_go_term.txt", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE) %>%
+  dplyr::select(2,1)
+
+background <- rownames(dds) %>%
+  as.data.frame() %>%
+  dplyr::rename(gene = 1)
+
+library(dbplyr)
+library(clusterProfiler)
+library(DOSE)
+library(enrichplot)
+
+
+cs_whole_up_go <- enricher(
+cs_whole_up$row,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+ background$gene,
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 0.05,
+  gson = NULL,
+ TERM2GENE =  goterms
+)
+
+# genes upregulated by salt in the whole samples. 
+
+head(cs_whole_up_go)
+
+cs_whole_up_go <- mutate(cs_whole_up_go, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+
+# mutate adds a column where a new calculation occurs.
+
+pdf("C:/Users/cassi/OneDrive/Desktop/REU/Analyses/cs_upregulated_GO.pdf",
+    width = 8, height = 8)
+dotplot(cs_whole_up_go, x="FoldEnrichment")
+
+dev.off()
+```
+
+The next chunk repeats the process above but for up-regulated nuclear genes
+
+```{r}
+cs_nuc_up_go <- enricher(
+cs_nuc_up$row,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+ background$gene,
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 0.05,
+  gson = NULL,
+ TERM2GENE =  goterms
+)
+
+
+head(cs_nuc_up_go)
+
+cs_nuc_up_go <- mutate(cs_nuc_up_go, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+
+dotplot(cs_nuc_up_go, x="FoldEnrichment")
+
+```
+
+And again for up-regulated genes in nuclear vs whole during control
+
+```{r}
+cs_nuc_whole_ctrl_up_go <- enricher(
+cs_nuc_whole_ctrl_up$row,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+ background$gene,
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 0.05,
+  gson = NULL,
+ TERM2GENE =  goterms
+)
+
+
+head(cs_nuc_whole_ctrl_up_go)
+
+cs_nuc_whole_ctrl_up_go <- mutate(cs_nuc_whole_ctrl_up_go, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+
+dotplot(cs_nuc_whole_ctrl_up_go, x="FoldEnrichment")
+```
+
+## Plot of DEGs
+
+The next chunk of code makes a plot showing all of the deferentially expressed genes (DEGs).
+
+```{r}
+library(tidyverse)
+res <- results(dds, contrast = c("Condition", "whole_salt", "whole_control"), tidy = T)
+
+# results conducts differential expression analysis on whole_salt versus whole_control samples 
+
+cs_whole_salt <- res %>%
+  dplyr::filter(padj <= .05 &
+                  abs(log2FoldChange) >= 1) %>%
+  dplyr::mutate(rank = dense_rank(desc(log2FoldChange)))
+
+# keeps only the rows where the adjusted p-value is less than or equal to 0.05 and the absolute value of the log2foldchange is greater than or equal to 1. 
+
+# mutate adds a new column called rank to the filtered dataset. The dense_rank function assigns a rank to each row based on the descending order of the log2FoldChange values. Higher absolute fold changes will have lower ranks.
+
+library("clipr")
+cs_whole_salt %>% 
+  distinct(row) %>%
+  write_clip()
+
+ cs_whole_salt %>%
+   ggplot(aes(x = rank, y = log2FoldChange, color = padj)) +
+  scale_x_reverse() +
+  geom_point(size = 1.8, alpha = .75) +
+  viridis::scale_color_viridis() +
+  xlab('log2FC rank (most upregulated = rank 1)') +
+  ggtitle("DE ranking of DEGs b/w whole salt and whole control") +
+   theme_classic()
+```
+
+It also creates another dotplot of GO terms, but for genes DOWN-regulated by salt in whole samples
+
+```{r}
+cs_whole_down_go <- enricher(
+cs_whole_down$row,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+ background$gene,
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 0.05,
+  gson = NULL,
+ TERM2GENE =  goterms
+)
+
+# genes downregulated by salt in the whole samples. padjustmethod adjusts for multiple testing. TERM2GENE is the df that maps goterms to geneIDs.
+ 
+#head(cs_nuc_up_go)
+
+cs_whole_down_go <- mutate(cs_whole_down_go, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+
+dotplot(cs_whole_down_go, x="FoldEnrichment")
+
+```
+
+## Dataframe of Cs RNAs
+
+The next chunk of code loads in the IDs and types of RNAs for Cs and creates a dataframe specifying whether the RNA is coding, noncoding, int coding, or int noncoding. It also utilizes read_delim() to read delimited text files.
+
+```{r}
+library(readr) # readr provides functions for reading delimited text files.
+
+cs_as_cod <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/gene_lists/cs_antisense_coding_txIDs.txt", 
+                                        delim = "\t", escape_double = FALSE, 
+                                        col_names = FALSE, trim_ws = TRUE) %>% mutate(type = "as-cod")
+
+# reads the file of antisense coding RNAs and adds a new column called type that maps as_cod to each 
+
+cs_as_nc <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/gene_lists/cs_antisense_noncoding_txIDs.txt", 
+                        delim = "\t", escape_double = FALSE, 
+                        col_names = FALSE, trim_ws = TRUE) %>% mutate(type = "as-lncRNA")
+
+cs_int_cod <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/gene_lists/cs_lincRNA_coding_txIDs.txt", 
+                        delim = "\t", escape_double = FALSE, 
+                        col_names = FALSE, trim_ws = TRUE) %>% mutate(type = "int-cod")
+
+cs_int_nc <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/gene_lists/cs_lincRNA_noncoding_txIDs.txt", 
+                       delim = "\t", escape_double = FALSE, 
+                       col_names = FALSE, trim_ws = TRUE) %>% mutate(type = "lincRNA")
+
+cs_as_cod <- right_join(tx2gene, cs_as_cod, by = c("TXNAME" = "X1"))
+cs_as_nc <- right_join(tx2gene, cs_as_nc, by = c("TXNAME" = "X1"))
+cs_int_nc <- right_join(tx2gene, cs_int_nc, by = c("TXNAME" = "X1"))
+cs_int_cod <- right_join(tx2gene, cs_int_cod, by = c("TXNAME" = "X1"))
+
+# joins each dataframe to tx2gene by the transcript name
+
+cs_RNAs <- rbind(cs_as_cod,
+                 cs_as_nc,
+                 cs_int_cod,
+                 cs_int_nc)
+
+# rbind combines the four dataframes into one dataframe called cs_RNAs
+
+tmap <- read_delim("C:/Users/cassi/OneDrive/Desktop/REU/Nelson_lab/gene_lists/tmap_files/cs_gffcompare.Csativa_merged.gtf.tmap", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+
+```
+
+make sure to comment out lab_italics for Cs and eutrema when making their volcano plots
+
+## Volcano Plot
+
+```{r}
+library(EnhancedVolcano)
+library(apeglm)
+res <- results(dds, contrast = c("Condition", "whole_salt", "whole_control"))
+
+res2 <- as.data.frame(res) %>% rownames_to_column(var = "gene") %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05)
+
+res2 %>%
+  inner_join(., cs_RNAs, by = c("gene" = "GENEID")) %>%
+  left_join(., tmap, by = c("gene" = "qry_gene_id"))
+
+
+res <- lfcShrink(dds,
+    contrast = c('Condition','whole_salt','whole_control'), res=res, type = 'ashr')
+
+
+
+  #lab_italics <- paste0("italic('", rownames(res), "')")
+  #selectLab_italics = paste0(
+    #"italic('",
+    #c('MSTRG.8713','MSTRG.18717','MSTRG.12528'),
+    #"')")
+
+
+
+ EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+        title = 'Whole salt vs whole control',
+    subtitle = "",
+    #selectLab = selectLab_italics,
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 10e-2,
+    FCcutoff = 1.0,
+    pointSize = 2.5,
+    labSize = 3.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    parseLabels = TRUE,
+    col = c('black', 'pink', 'purple', 'red3'),
+    colAlpha = 3/5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black')
+
+ ggsave(plot = last_plot(),"C:/Users/cassi/OneDrive/Desktop/REU/Analyses/cs_test_volcano.pdf", width = 8, height = 6)
+```
+
+## Plot lncRNA counts
+
+The next chunk makes a plot of the counts of the genes identified by the volcano plot
+
+```{r}
+plotCounts(dds, gene="MSTRG.51714", intgroup="Condition")
+
+plotCounts(dds, gene = "Csa10g008690", intgroup = 'Condition')
+
+```
+
+## DEGs Venn diagrams
+
+The next chunk of code finds the overlap of DEGs between the Camelina Sativa genes of interest
+
+```{r}
+cs_nuc <- results(dds, contrast = c("Condition", "nuc_salt", "nuc_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "nuclear_salt")
+
+# conducts DE analysis in nuclear salt versus nuclear control samples. It filters only data that have an absolute value of a log2foldchange that is >= 1 and a p <= 0.05 (only keeps significant data), and adds a type column named nuclear_salt
+
+cs_whole <- results(dds, contrast = c("Condition", "whole_salt", "whole_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "whole_salt")
+
+cs_comp_salt <- results(dds, contrast = c("Condition", "nuc_salt", "whole_salt"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "compartment_salt")
+
+cs_comp_ctrl <- results(dds, contrast = c("Condition", "nuc_control", "whole_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "compartment_control")
+
+library(ggvenn)
+library(ggVennDiagram)
+combined <- list(nuclear_salt = cs_nuc$row,
+                 whole_salt = cs_whole$row,
+                 compartment_control = cs_comp_ctrl$row,
+                 compartment_salt = cs_comp_salt$row)
+ggvenn(combined,
+       set_name_size = 2)
+
+
+
+# make a venn diagram for newly annotated trancripts:
+cs_nuc <- results(dds, contrast = c("Condition", "nuc_salt", "nuc_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "nuclear_salt") %>%
+  filter(grepl("MSTRG", row))
+
+cs_whole <- results(dds, contrast = c("Condition", "whole_salt", "whole_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "whole_salt") %>%
+  filter(grepl("MSTRG", row))
+
+cs_comp_salt <- results(dds, contrast = c("Condition", "nuc_salt", "whole_salt"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "compartment_salt") %>%
+  filter(grepl("MSTRG", row))
+
+cs_comp_ctrl <- results(dds, contrast = c("Condition", "nuc_control", "whole_control"), tidy = T) %>%
+  filter(abs(log2FoldChange) >= 1 &
+           padj <= .05) %>%
+  mutate(type = "compartment_control") %>%
+  filter(grepl("MSTRG", row))
+
+
+combined <- list(nuclear_salt = cs_nuc$row,
+                 whole_salt = cs_whole$row,
+                 compartment_control = cs_comp_ctrl$row,
+                 compartment_salt = cs_comp_salt$row)
+ggvenn(combined,
+       set_name_size = 2.5) # had to change the name size from 4 to 2.5
+
+
+combined2 <- rbind(cs_nuc, cs_whole, cs_comp_ctrl, cs_comp_salt)
+
+library(data.table)
+combined2_wide <- data.table::dcast(setDT(combined2), row ~ type, fun.aggregate = length) %>% as.data.frame()
+
+combined2_wide %>%
+  filter(compartment_control == 1 &
+           compartment_salt == 0 &
+           nuclear_salt == 1 &
+           whole_salt == 0) %>%
+  distinct(row) %>%
+  left_join(., cs_RNAs, by = c("row" = "GENEID")) %>%
+  left_join(., tmap, by = c("row" = "qry_gene_id"))
+
+# combined2 wide is a dataframe containing a column for genes and four columns representing sample types. "1"s in the type column represent the gene being present in that sample.
+```
+
+## RNA expression heatmap
+
+The next chunk of code creates a heatmap of newly annotated RNAs.
+
+Need to fix this? columns
+
+```{r}
+tpm <- txi$abundance %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "gene") %>%
+  filter(grepl("MSTRG", gene)) %>%
+  column_to_rownames(var = "gene")
+colnames(tpm) <- cs_samples$Condition
+
+x <- apply(tpm, 1, mad) #Calculate IQR  
+y <- tpm[x>quantile(x,0.5),] # selecting top 50% most variable genes  
+
+tpm_z <- scale(t(t(tpm)))
+# filter for variability
+
+lnc_vst <- assay(vsd) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "gene") %>%
+  filter(grepl("MSTRG", gene)) %>%
+  column_to_rownames(var = "gene") 
+colnames(lnc_vst) <- cs_samples$Condition
+lnc_vst<- lnc_vst %>%
+  relocate(8, .after = 5)
+x <- apply(lnc_vst, 1, mad) #Calculate IQR finds genes with variance
+y <- lnc_vst[x>quantile(x,0.95),] # selecting top 50% most variable genes  
+
+lnc_vst_z <- t(scale(t(y)))
+
+library(ComplexHeatmap)
+library(pheatmap)
+paletteLength <- 50
+myColor <- colorRampPalette(c("darkblue", "white", "orange"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+myBreaks <- c(seq(min(lnc_vst_z), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(lnc_vst_z)/paletteLength, max(lnc_vst_z), length.out=floor(paletteLength/2)))
+
+
+
+samp1 <- rownames(lnc_vst_z) %>% as.data.frame() %>% rename(gene = 1)
+
+cs_RNAs2 <- cs_RNAs %>%
+  select(-TXNAME) %>%
+  inner_join(., samp1, by = c("GENEID" = "gene")) %>%
+  distinct(GENEID, .keep_all = T) %>%
+  column_to_rownames(var = "GENEID")
+
+
+ann_colors = list(
+  type = c("as-cod" = "lightblue", "as-lncRNA" = "purple", "int-cod" = "red", "lincRNA" = "black"))
+
+
+#pdf("C:/Users/cassi/OneDrive/Desktop/REU/Analyses/cs_RNA_heatmap.pdf",
+    #width = 8, height = 8)
+pheatmap(lnc_vst_z, breaks = myBreaks, color = myColor,
+         cluster_cols = F, annotation_row = cs_RNAs2, annotation_colors = ann_colors, name = "Z-Score")
+
+
+#dev.off()
+```
